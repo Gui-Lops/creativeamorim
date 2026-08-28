@@ -1398,3 +1398,23 @@ body.ready .loader {
     background: var(--red);
   }
 }
+
+.film {
+  position: relative;
+  height: 500vh;
+}
+
+.film-sticky {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  width: 100%;
+  overflow: hidden;
+}
+
+.film-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}

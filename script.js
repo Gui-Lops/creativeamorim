@@ -3,202 +3,419 @@
   const film = document.querySelector('.film');
   const words = [...document.querySelectorAll('.hero-word')];
   const scrollCue = document.querySelector('.scroll-cue');
-  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const clamp = (v, min, max) => Math.min(Math.max(v, min), max);
 
   if (!video || !film) return;
 
-  video.muted = true;
-  video.playsInline = true;
-  video.preload = 'auto';
+  const reduced = window.matchMedia(
+    '(prefers-reduced-motion: reduce)'
+  ).matches;
 
-  let targetTime = 0;
-  let isReady = false;
-  let rafId = null;
-  const SMOOTH_FACTOR = 0.18; // Easing factor for smooth scrubbing (0.1-0.3)
-  const SEEK_THRESHOLD = 0.05; // Min time diff to trigger seek (seconds)
+  const clamp = (value, min, max) =>
+    Math.min(Math.max(value, min), max);
 
-  // Calculate normalized scroll progress (0.0 to 1.0) through the film section
+  let videoReady = false;
+  let ticking = false;
+  let lastTime = -1;
+
+  /*
+   * ---------------------------------------------------------
+   * PROGRESSO DO SCROLL
+   * ---------------------------------------------------------
+   *
+   * .film é a área longa.
+   * .film-sticky permanece preso na viewport.
+   *
+   * 0%  = começo da .film
+   * 100% = final da .film
+   */
   function getProgress() {
-    const filmTop = film.offsetTop;
-    const filmHeight = film.offsetHeight;
-    const windowHeight = window.innerHeight;
-    const maxScroll = Math.max(filmHeight - windowHeight, 1);
-    const scrollY = window.pageYOffset || document.documentElement.scrollTop;
+    const rect = film.getBoundingClientRect();
 
-    return clamp((scrollY - filmTop) / maxScroll, 0, 1);
+    const scrollDistance =
+      film.offsetHeight - window.innerHeight;
+
+    if (scrollDistance <= 0) {
+      return 0;
+    }
+
+    return clamp(
+      -rect.top / scrollDistance,
+      0,
+      1
+    );
   }
 
-  // Update UI and calculate video target timestamp
-  function updateUI() {
+  /*
+   * ---------------------------------------------------------
+   * INTERFACE
+   * ---------------------------------------------------------
+   */
+  function updateUI(progress) {
+
+    // Scroll cue
+    if (scrollCue) {
+      const opacity = clamp(
+        1 - progress * 4,
+        0,
+        1
+      );
+
+      scrollCue.style.opacity = opacity;
+
+      scrollCue.style.pointerEvents =
+        opacity < 0.05
+          ? 'none'
+          : 'auto';
+    }
+
+    // FAZEMOS -> MARCAS -> VIVER.
+    words.forEach((word, index) => {
+
+      const start =
+        0.06 + index * 0.22;
+
+      const end =
+        start + 0.28;
+
+      const reveal = clamp(
+        (progress - start) /
+          (end - start),
+        0,
+        1
+      );
+
+      word.style.setProperty(
+        '--reveal',
+        reveal
+      );
+    });
+  }
+
+  /*
+   * ---------------------------------------------------------
+   * VÍDEO
+   * ---------------------------------------------------------
+   */
+  function updateVideo() {
+
+    if (!videoReady) return;
+
+    if (
+      !Number.isFinite(video.duration) ||
+      video.duration <= 0
+    ) {
+      return;
+    }
+
     const progress = getProgress();
 
-    // 1. Scroll Cue Fade
-    if (scrollCue) {
-      const cueOpacity = clamp(1 - progress * 4, 0, 1);
-      scrollCue.style.opacity = cueOpacity;
-      scrollCue.style.pointerEvents = cueOpacity < 0.05 ? 'none' : 'auto';
+    updateUI(progress);
+
+    if (reduced) {
+      return;
     }
 
-    // 2. Sequential Word Reveal: FAZEMOS -> MARCAS -> VIVER.
-    words.forEach((word, index) => {
-      const start = 0.06 + index * 0.22;
-      const end = start + 0.28;
-      const wordReveal = clamp((progress - start) / (end - start), 0, 1);
-      word.style.setProperty('--reveal', wordReveal);
+    /*
+     * PROGRESSO 0 → 1
+     *
+     * vira
+     *
+     * TEMPO 0 → 8 segundos
+     */
+    const targetTime =
+      progress * video.duration;
+
+    /*
+     * Evita seeks idênticos.
+     */
+    if (
+      Math.abs(targetTime - lastTime) < 0.016
+    ) {
+      return;
+    }
+
+    lastTime = targetTime;
+
+    try {
+      video.currentTime = targetTime;
+    } catch (error) {
+      console.warn(
+        'Erro ao alterar currentTime:',
+        error
+      );
+    }
+  }
+
+  /*
+   * ---------------------------------------------------------
+   * SCROLL
+   * ---------------------------------------------------------
+   */
+  function handleScroll() {
+
+    if (ticking) return;
+
+    ticking = true;
+
+    requestAnimationFrame(() => {
+      updateVideo();
+      ticking = false;
     });
-
-    // 3. Map progress to video duration
-    if (video.duration && !isNaN(video.duration)) {
-      const maxVideoTime = Math.max(video.duration - 0.05, 0.1);
-      targetTime = progress * maxVideoTime;
-    }
   }
 
-  // Smoothed render loop - eases the video's ACTUAL position toward the target.
-  // Unlike a runaway local clock, this tracks video.currentTime so seeks always
-  // start from where the video really is (both directions) and never race ahead.
-  function renderLoop() {
-    updateUI();
-
-    if (!reduced && isReady && video.duration && !isNaN(video.duration)) {
-      // Skip if a seek is already in flight so we never queue seeks on a stale frame
-      if (!video.seeking) {
-        const actual = video.currentTime;
-        const eased = actual + (targetTime - actual) * SMOOTH_FACTOR;
-        if (Math.abs(eased - actual) > SEEK_THRESHOLD) {
-          try {
-            video.currentTime = eased;
-          } catch (e) {
-            // ignore: retried on next frame
-          }
-        }
-      }
-    }
-
-    rafId = requestAnimationFrame(renderLoop);
-  }
-
-  // Initialize and warm up video decoder
+  /*
+   * ---------------------------------------------------------
+   * VIDEO READY
+   * ---------------------------------------------------------
+   */
   function initVideo() {
-    const onLoaded = () => {
-      if (video.duration && !isNaN(video.duration)) {
-        isReady = true;
-        if (video.currentTime === 0) {
-          video.currentTime = 0.001; // Render frame 0
-        }
-        updateUI();
+
+    video.muted = true;
+    video.playsInline = true;
+
+    /*
+     * Importante:
+     * queremos usar o vídeo como uma sequência de frames,
+     * não como um vídeo tocando.
+     */
+    video.pause();
+
+    video.preload = 'auto';
+
+    function ready() {
+
+      if (
+        Number.isFinite(video.duration) &&
+        video.duration > 0
+      ) {
+        videoReady = true;
+
+        console.log(
+          'Scroll video pronto:',
+          video.duration + 's'
+        );
+
+        /*
+         * Começa no frame 0.
+         */
+        try {
+          video.currentTime = 0;
+        } catch (e) {}
+
+        updateVideo();
       }
-    };
-
-    video.addEventListener('loadedmetadata', onLoaded);
-    video.addEventListener('loadeddata', onLoaded);
-    video.addEventListener('canplay', onLoaded);
-
-    if (video.readyState >= 2) {
-      onLoaded();
     }
 
-    // Warm-up on first user interaction - load video frames without playing
-    const warmUp = async () => {
-      try {
-        video.muted = true;
-        // Load first frame without playing
-        video.currentTime = 0.001;
-        await new Promise(r => setTimeout(r, 50));
-        video.currentTime = 0;
-        isReady = true;
-      } catch (e) {}
-    };
+    video.addEventListener(
+      'loadedmetadata',
+      ready
+    );
 
-    ['wheel', 'touchstart', 'pointerdown', 'scroll'].forEach((evt) => {
-      window.addEventListener(evt, warmUp, { once: true, passive: true });
-    });
+    video.addEventListener(
+      'loadeddata',
+      ready
+    );
 
-    // Ensure video never plays automatically - only scrub via scroll
-    video.addEventListener('play', () => {
-      if (!video.seeking) {
-        video.pause();
-      }
-    });
+    video.addEventListener(
+      'canplay',
+      ready
+    );
+
+    video.addEventListener(
+      'canplaythrough',
+      ready
+    );
+
+    /*
+     * Caso já esteja carregado.
+     */
+    if (
+      video.readyState >= 2 &&
+      Number.isFinite(video.duration)
+    ) {
+      ready();
+    }
   }
 
-  initVideo();
-  rafId = requestAnimationFrame(renderLoop);
-
-  // Throttled scroll/resize handler
-  let ticking = false;
-  function onScrollOrResize() {
-    if (!ticking) {
-      requestAnimationFrame(() => {
-        updateUI();
-        ticking = false;
-      });
-      ticking = true;
+  /*
+   * ---------------------------------------------------------
+   * EVITA AUTOPLAY
+   * ---------------------------------------------------------
+   */
+  video.addEventListener(
+    'play',
+    () => {
+      video.pause();
     }
-  }
-
-  window.addEventListener('scroll', onScrollOrResize, { passive: true });
-  window.addEventListener('resize', onScrollOrResize);
-
-  // Cleanup on page hide
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden && rafId) {
-      cancelAnimationFrame(rafId);
-    } else if (!document.hidden && !rafId) {
-      rafId = requestAnimationFrame(renderLoop);
-    }
-  });
-
-  // Scroll Reveal Observer for other sections
-  const observer = new IntersectionObserver(
-    (entries) => {
-      entries.forEach((entry) => {
-        if (entry.isIntersecting) {
-          entry.target.classList.add('visible');
-          observer.unobserve(entry.target);
-        }
-      });
-    },
-    { threshold: 0.1, rootMargin: '0px 0px -40px 0px' }
   );
 
-  document.querySelectorAll('.reveal').forEach((el) => observer.observe(el));
+  /*
+   * ---------------------------------------------------------
+   * RESIZE
+   * ---------------------------------------------------------
+   */
+  window.addEventListener(
+    'resize',
+    updateVideo
+  );
 
-  // Mobile Navigation Menu Toggle
-  const toggle = document.querySelector('.menu-toggle');
-  const menu = document.querySelector('.menu');
+  /*
+   * ---------------------------------------------------------
+   * SCROLL
+   * ---------------------------------------------------------
+   */
+  window.addEventListener(
+    'scroll',
+    handleScroll,
+    {
+      passive: true
+    }
+  );
+
+  /*
+   * ---------------------------------------------------------
+   * REVEALS
+   * ---------------------------------------------------------
+   */
+  const observer =
+    new IntersectionObserver(
+      (entries) => {
+
+        entries.forEach((entry) => {
+
+          if (entry.isIntersecting) {
+
+            entry.target.classList.add(
+              'visible'
+            );
+
+            observer.unobserve(
+              entry.target
+            );
+          }
+        });
+      },
+      {
+        threshold: 0.1,
+        rootMargin:
+          '0px 0px -40px 0px'
+      }
+    );
+
+  document
+    .querySelectorAll('.reveal')
+    .forEach((element) => {
+      observer.observe(element);
+    });
+
+  /*
+   * ---------------------------------------------------------
+   * MENU MOBILE
+   * ---------------------------------------------------------
+   */
+  const toggle =
+    document.querySelector('.menu-toggle');
+
+  const menu =
+    document.querySelector('.menu');
 
   if (toggle && menu) {
-    toggle.addEventListener('click', () => {
-      const isOpen = menu.classList.toggle('open');
-      toggle.setAttribute('aria-expanded', isOpen);
-    });
 
-    menu.querySelectorAll('a').forEach((link) => {
-      link.addEventListener('click', () => {
-        menu.classList.remove('open');
-        toggle.setAttribute('aria-expanded', 'false');
-      });
-    });
+    toggle.addEventListener(
+      'click',
+      () => {
 
-    document.addEventListener('click', (e) => {
-      if (menu.classList.contains('open') && !menu.contains(e.target) && !toggle.contains(e.target)) {
-        menu.classList.remove('open');
-        toggle.setAttribute('aria-expanded', 'false');
+        const isOpen =
+          menu.classList.toggle('open');
+
+        toggle.setAttribute(
+          'aria-expanded',
+          String(isOpen)
+        );
       }
-    });
+    );
+
+    menu
+      .querySelectorAll('a')
+      .forEach((link) => {
+
+        link.addEventListener(
+          'click',
+          () => {
+
+            menu.classList.remove(
+              'open'
+            );
+
+            toggle.setAttribute(
+              'aria-expanded',
+              'false'
+            );
+          }
+        );
+      });
+
+    document.addEventListener(
+      'click',
+      (event) => {
+
+        if (
+          menu.classList.contains('open') &&
+          !menu.contains(event.target) &&
+          !toggle.contains(event.target)
+        ) {
+
+          menu.classList.remove(
+            'open'
+          );
+
+          toggle.setAttribute(
+            'aria-expanded',
+            'false'
+          );
+        }
+      }
+    );
   }
 
-  // Loader dismiss
-  const removeLoader = () => {
-    document.body.classList.add('ready');
-  };
+  /*
+   * ---------------------------------------------------------
+   * LOADER
+   * ---------------------------------------------------------
+   */
+  function removeLoader() {
+    document.body.classList.add(
+      'ready'
+    );
+  }
 
-  if (document.readyState === 'complete') {
+  if (
+    document.readyState === 'complete'
+  ) {
+
     removeLoader();
+
   } else {
-    window.addEventListener('load', removeLoader);
-    setTimeout(removeLoader, 1500);
+
+    window.addEventListener(
+      'load',
+      removeLoader,
+      {
+        once: true
+      }
+    );
+
+    setTimeout(
+      removeLoader,
+      1500
+    );
   }
+
+  /*
+   * ---------------------------------------------------------
+   * START
+   * ---------------------------------------------------------
+   */
+  initVideo();
+
 })();
