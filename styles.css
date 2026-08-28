@@ -859,7 +859,7 @@ body.ready .loader {
   min-height: 200px;
   flex-direction: column;
   justify-content: space-between;
-  padding: 1.5rem 2rem 0 0;
+  padding: 2rem;
   border-right: 1px solid var(--line);
   transition: background 0.35s var(--ease-smooth), padding-left 0.35s var(--ease-smooth);
 }
